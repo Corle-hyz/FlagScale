@@ -1700,7 +1700,7 @@ def _add_distributed_args(parser):
                        help='overlap pipeline parallel communication with forward and backward chunks',
                        dest='overlap_p2p_comm')
     group.add_argument('--distributed-backend', default='nccl',
-                       choices=['nccl', 'gloo'],
+                       choices=['nccl', 'gloo', 'dummy'],
                        help='Which backend to use for distributed training.')
     group.add_argument('--distributed-timeout-minutes', type=int, default=10,
                        help='Timeout minutes for torch.distributed.')
@@ -2194,5 +2194,9 @@ def _add_auto_tuner_args(parser):
 
     group.add_argument('--auto-tune', action='store_true',
                        help='use auto tuner')
+    group.add_argument('--enable-simulator', action='store_true',
+                       help='Use single process to simulate the distributed training.')
+    group.add_argument('--simulated-rank', nargs='*', type=int, default=None,
+                       help='Use this arg to assign rank(s) to be simulated by actual running.')
 
     return parser

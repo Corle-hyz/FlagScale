@@ -8,6 +8,13 @@ from datetime import timedelta
 
 import torch
 
+import os
+import threading
+import datetime
+import multiprocessing
+
+import dummy_collectives
+
 from flagscale.train.hetero.parallel_context import RankMapper
 
 
@@ -23,7 +30,7 @@ class FSTrainArguments:
         if name == "rank_mapper":
             return self._rank_mapper
         return getattr(self.args, name)
-    
+
     def _initialize_distributed(self):
         """Initialize torch.distributed and core model parallel."""
         args = self.args
@@ -50,22 +57,71 @@ class FSTrainArguments:
                 device_id = torch.device(f'cuda:{args.local_rank}')
             else:
                 device_id = None
+            if args.enable_simulator:
+                # Define a function to initialize and run operations with a virtual rank
+                def run_virtual_rank(rank, world_size, timeout):
+                    # # TCPStore Configuration
+                    # store_master_addr = "127.0.0.1"  # IP address of the master node
+                    # store_master_port = 67832        # Port to communicate on
+                    # store_rank = rank                # Rank of this process (0 is usually the master)
+                    # store_world_size = world_size    # Total number of processes
+                    # # Create a TCPStore for initialization
+                    # tcp_store = torch.distributed.TCPStore(
+                    #     store_master_addr,
+                    #     store_master_port,
+                    #     store_world_size,
+                    #     (store_rank == 0),
+                    #     datetime.timedelta(seconds=300)
+                    # )
+                    os.environ["MASTER_ADDR"] = "127.0.0.1"  # Replace with the IP address of the master node
+                    os.environ["MASTER_PORT"] = "37832"      # Replace with a port number
+                    init_process_group_kwargs = {
+                        'backend' : args.distributed_backend,
+                        # 'backend': 'dummy',
+                        # 'store': tcp_store,
+                        'world_size': world_size,
+                        'rank': rank,
+                        'timeout': datetime.timedelta(minutes=timeout),
+                    }
+                    # Initialize the custom virtual process group
+                    torch.distributed.init_process_group(**init_process_group_kwargs)
+                    # Perform distributed operations
+                    torch.distributed.barrier()
+                    print("Successfully init process group with dummy backend")
+                # Call the init process with multithreads
+                
+                # force rank 0 to run at GPU
+                gpu_task = multiprocessing.Process(target=run_virtual_rank, args=(0, args.world_size, args.distributed_timeout_minutes))
+                gpu_task.start()
 
-            # Call the init process
-            init_process_group_kwargs = {
-                'backend' : args.distributed_backend,
-                'world_size': args.world_size,
-                'rank': args.rank,
-                'timeout': timedelta(minutes=args.distributed_timeout_minutes),
-            }
-            # for communication based cpu
-            if args.enable_hetero and args.hetero_use_cpu_communication:
-                # if not all(device_type == args.hetero_device_types[0] for device_type in args.hetero_device_types):
-                #     init_process_group_kwargs['backend'] = 'gloo'
-                # Force the group of backend gloo only support cpu
-                init_process_group_kwargs['backend'] = 'cpu:gloo'
-            torch.distributed.init_process_group(**init_process_group_kwargs)
-    
+                threads = []
+                # Start a thread for each virtual rank
+                # for rank in range(args.world_size):
+                for rank in range(1, args.world_size):
+                    thread = threading.Thread(target=run_virtual_rank, args=(rank, args.world_size, args.distributed_timeout_minutes))
+                    thread.start()
+                    threads.append(thread)
+                # Wait for all threads to complete
+
+                for thread in threads:
+                    thread.join()
+                
+            else:
+                # Call the init process
+                init_process_group_kwargs = {
+                    'backend' : args.distributed_backend,
+                    'world_size': args.world_size,
+                    'rank': args.rank,
+                    'timeout': timedelta(minutes=args.distributed_timeout_minutes),
+                }
+                # for communication based cpu
+                if args.enable_hetero and args.hetero_use_cpu_communication:
+                    # if not all(device_type == args.hetero_device_types[0] for device_type in args.hetero_device_types):
+                    #     init_process_group_kwargs['backend'] = 'gloo'
+                    # Force the group of backend gloo only support cpu
+                    init_process_group_kwargs['backend'] = 'cpu:gloo'
+                torch.distributed.init_process_group(**init_process_group_kwargs)
+
     
     def _build_rank_mapper(self):
         self._initialize_distributed()

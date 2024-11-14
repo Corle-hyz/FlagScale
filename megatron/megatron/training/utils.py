@@ -472,7 +472,9 @@ def save_checkpoint_info(dir, rank0=False):
     existed = True if mpu.get_data_parallel_rank() == 0 else False
     cur_ckpt_info = {'rank': rank, 'host': host, 'ckpt_dir': cur_ckpt_dir, 'existed': existed}
 
-    torch.distributed.all_gather_object(all_ckpts_info, cur_ckpt_info)
+    # torch.distributed.all_gather_object(all_ckpts_info, cur_ckpt_info)
+    for cur_rank in range(world_size):
+        all_ckpts_info[cur_rank] = {'rank': cur_rank, 'host': host, 'ckpt_dir': cur_ckpt_dir, 'existed': existed}
 
     local_rank = os.environ.get('LOCAL_RANK')
     if int(local_rank) == 0:

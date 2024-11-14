@@ -64,8 +64,11 @@ class RankMapper:
         all_rank_infos = [None] * world_size
         cur_rank_info = {'rank': rank,
                          'device_type': self._hetero_current_device_type}
-        torch.distributed.all_gather_object(
-            all_rank_infos, cur_rank_info)
+        # torch.distributed.all_gather_object(
+        #     all_rank_infos, cur_rank_info)
+        for index, value in enumerate(all_rank_infos):
+            corresponding_rank_info = {'rank': index, 'device_type': self._hetero_current_device_type}
+            all_rank_infos[index] = corresponding_rank_info
         physical_ranks = []
         for info in all_rank_infos:
             self._rank_infos[info['rank']] = info
@@ -206,14 +209,21 @@ class ProcessMesh:
             ranks = self._rank_mapper.to_physical_ranks(logical_ranks)
             group = torch.distributed.new_group(
                 ranks,
-                backend=self._distributed_backend,
+                backend=self._args.distributed_backend,
                 timeout=self._timeout,
                 pg_options=pg_options,
             )
             if gloo:
-                group_gloo = torch.distributed.new_group(
-                    ranks, timeout=self._timeout, backend="gloo"
-                )
+                if self._args.distributed_backend == 'dummy':
+                    group_gloo = torch.distributed.new_group(
+                        ranks, 
+                        timeout=self._timeout, 
+                        backend=self._args.distributed_backend,
+                    )
+                else:
+                    group_gloo = torch.distributed.new_group(
+                        ranks, timeout=self._timeout, backend="gloo"
+                    )
             self._all_group_ranks[group_name].append(ranks)
             if self._rank in ranks:
                 self._group_ranks[group_name] = ranks
@@ -517,9 +527,12 @@ class ParallelContext:
             "rank": rank,
             "process_mesh_idx": self._current_process_mesh_index,
         }
-        torch.distributed.all_gather_object(
-            all_rank_to_process_mesh, cur_rank_to_process_mesh
-        )
+        # torch.distributed.all_gather_object(
+        #     all_rank_to_process_mesh, cur_rank_to_process_mesh
+        # )
+        for index, value in enumerate(all_rank_to_process_mesh):
+            corresponding_mesh_info = {'rank': index, 'process_mesh_idx': self._current_process_mesh_index}
+            all_rank_to_process_mesh[index] = corresponding_mesh_info
         for item in all_rank_to_process_mesh:
             self._rank_to_process_mesh[item["rank"]] = self._process_meshes[
                 item["process_mesh_idx"]
@@ -606,7 +619,10 @@ class ParallelContext:
             if mesh_index == len(self._process_meshes):
                 aggregated_ranks = [rank for ranks in path for rank in ranks]
                 self._all_group_ranks[group_name].append(aggregated_ranks)
-                group = torch.distributed.new_group(aggregated_ranks, timeout=self._timeout, use_local_synchronization=True)
+                if self._args.distributed_backend=='dummy':
+                    group = torch.distributed.new_group(aggregated_ranks, timeout=self._timeout, use_local_synchronization=True, backend=self._args.distributed_backend)
+                else:
+                    group = torch.distributed.new_group(aggregated_ranks, timeout=self._timeout, use_local_synchronization=True)
                 if self._rank in aggregated_ranks:
                     self._process_groups[group_name].append(group)
                     self._group_ranks[group_name].append(aggregated_ranks)
@@ -636,7 +652,10 @@ class ParallelContext:
             )
             ranks = list(itertools.chain.from_iterable(ranks_list))
             self._all_group_ranks["mp_exp"].append(ranks)
-            group = torch.distributed.new_group(ranks, timeout=self._timeout, use_local_synchronization=True)
+            if self._args.distributed_backend=='dummy':
+                group = torch.distributed.new_group(ranks, timeout=self._timeout, use_local_synchronization=True, backend=self._args.distributed_backend)
+            else:
+                group = torch.distributed.new_group(ranks, timeout=self._timeout, use_local_synchronization=True)
             if self._rank in ranks:
                 self._group_ranks["mp_exp"] = ranks
                 self._process_groups["mp_exp"] = group
@@ -672,9 +691,14 @@ class ParallelContext:
             else:
                 embedding_ranks = ranks
                 position_embedding_ranks = ranks
-            group = torch.distributed.new_group(
-                embedding_ranks, timeout=self._timeout, use_local_synchronization=True
-            )
+            if self._args.distributed_backend=='dummy':
+                group = torch.distributed.new_group(
+                    embedding_ranks, timeout=self._timeout, use_local_synchronization=True, backend=self._args.distributed_backend
+                )
+            else:
+                group = torch.distributed.new_group(
+                    embedding_ranks, timeout=self._timeout, use_local_synchronization=True
+                )                
             if self._rank in embedding_ranks:
                 self._process_groups["embd"].append(group)
                 self._process_group_to_ranks[group] = embedding_ranks
@@ -682,9 +706,14 @@ class ParallelContext:
             if self._rank in ranks:
                 self._group_ranks["embd"].append(embedding_ranks)
 
-            group = torch.distributed.new_group(
-                position_embedding_ranks, timeout=self._timeout, use_local_synchronization=True
-            )
+            if self._args.distributed_backend=='dummy':
+                group = torch.distributed.new_group(
+                    position_embedding_ranks, timeout=self._timeout, use_local_synchronization=True, backend=self._args.distributed_backend
+                )
+            else:
+                group = torch.distributed.new_group(
+                    position_embedding_ranks, timeout=self._timeout, use_local_synchronization=True
+                )
             if self._rank in position_embedding_ranks:
                 self._process_groups["embd_pos"].append(group)
                 self._process_group_to_ranks[group] = position_embedding_ranks
