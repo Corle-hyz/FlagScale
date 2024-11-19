@@ -8,16 +8,16 @@ def compute_pipeline_parallelism_cost(
         scheme: str='1F1B',
         # num_stages: int=1,
         num_micro_batches: int=1,
-        process_meshes: list=None,
+        process_mesh: list=None,
         pp_layers_split: list=None,
         fwd_time_per_stage_chunk: list=None,
         bwd_time_per_stage_chunk: list=None,
         comm_time_between_stages: list=None,
         # TODO: add fine-greaied recomputation
 ):
-    # process_meshes: [tp0,cp0,ep0,dp0,pp0,(tp1,cp1,...)]
+    # process_mesh: [tp0,cp0,ep0,dp0,pp0,(tp1,cp1,...)]
     # comm_time_between_stages[i] means the comm time between stage i-1 and stage i
-    num_pp_stages = sum(process_meshes[3::5])
+    num_pp_stages = sum(process_mesh[3::5])
     assert len(pp_layers_split) ==  num_pp_stages, \
         "\flength of list {num_layers_per_stage} should match {num_stages}"
     assert len(fwd_time_per_stage_chunk) ==  num_pp_stages, \
@@ -33,6 +33,7 @@ def compute_pipeline_parallelism_cost(
     
     pipeline_cost = 0
     # TODO: consider when comm time > comp time
+    # each stage onlt depends on its next stage
     if scheme == '1F1B' or scheme== 'AFAB':
         pipeline_cost = pp_last_stage_time
         for stage_from_last in range(2, num_pp_stages):
@@ -49,8 +50,7 @@ def compute_pipeline_parallelism_cost(
 
 
 def simulator(
-        process_meshes: list=None,
-        stage: int=None,
+        process_mesh: list=None,
         num_layers: int=None,
         simulated_rank: int=None
 ):
@@ -89,7 +89,7 @@ def simulator(
 
 # call simulator to obtain the execution of each stage
 def simulate_pipeline_parallelism_per_stage_time(
-        process_meshes: list=None,
+        process_mesh: list=None,
         pp_layers_split: list=None,
         fwd_time_per_stage_chunk: list=None,
         bwd_time_per_stage_chunk: list=None,
@@ -99,17 +99,17 @@ def simulate_pipeline_parallelism_per_stage_time(
     for stage,num_layers in enumerate(pp_layers_split):
         # TODO: confirm simulated_rank for different stage
         simulated_rank = 0
-        fwd_time, bwd_time, comm_time = simulator(process_meshes, stage, num_layers, simulated_rank)
+        fwd_time, bwd_time, comm_time = simulator(process_mesh, stage, num_layers, simulated_rank)
         fwd_time_per_stage_chunk.append(fwd_time)
         bwd_time_per_stage_chunk.append(bwd_time)
         comm_time_between_stages.append(comm_time)
 
 
 
-def analyze_pipeline_time(
+def analyze_pp_time(
         scheme: str='1F1B',
         num_micro_batches: int=1,
-        process_meshes: list=None,
+        process_mesh: list=None,
         pp_layers_split: list=None
     ):
     fwd_time_per_stage_chunk = []
@@ -117,7 +117,7 @@ def analyze_pipeline_time(
     comm_time_between_stages = []
 
     simulate_pipeline_parallelism_per_stage_time(
-        process_meshes=process_meshes,
+        process_mesh=process_mesh,
         pp_layers_split=pp_layers_split,
         fwd_time_per_stage_chunk=fwd_time_per_stage_chunk,
         bwd_time_per_stage_chunk=bwd_time_per_stage_chunk,
@@ -127,7 +127,7 @@ def analyze_pipeline_time(
     pipeline_cost = compute_pipeline_parallelism_cost(
         scheme=scheme,
         num_micro_batches=num_micro_batches,
-        process_meshes=process_meshes,
+        process_mesh=process_mesh,
         pp_layers_split=pp_layers_split,
         fwd_time_per_stage_chunk=fwd_time_per_stage_chunk,
         bwd_time_per_stage_chunk=bwd_time_per_stage_chunk,
