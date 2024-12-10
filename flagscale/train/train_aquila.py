@@ -175,6 +175,8 @@ def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor):
         torch.distributed.all_reduce(loss, group=mpu.get_context_parallel_group())
 
     # Check individual rank losses are not NaN prior to DP all-reduce.
+    if args.enable_simulator:
+        args.check_for_nan_in_loss_and_grad = False
     if args.check_for_nan_in_loss_and_grad:
         global_rank = torch.distributed.get_rank()
         assert not loss[0].isnan(), (
@@ -316,8 +318,10 @@ def train_valid_test_datasets_provider(train_val_test_num_samples):
 
     return train_ds, valid_ds, test_ds
 
+import time
 
 if __name__ == "__main__":
+    start_time = time.time()
 
     # Temporary for transition to core datasets
     train_valid_test_datasets_provider.is_distributed = True
@@ -333,3 +337,6 @@ if __name__ == "__main__":
         get_batch_fn=get_batch,
         extra_valid_dataset_provider=extra_valid_dataset_provider
     )
+
+    end_time = time.time()
+    print("> elapsed time: ", end_time - start_time)

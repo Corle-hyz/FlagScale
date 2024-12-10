@@ -25,36 +25,18 @@ class BackendDummy : public Backend {
 
   BackendDummy(int rank, int size);
 
-//   c10::intrusive_ptr<Work> init_process_group(
-//       std::vector<std::vector<at::Tensor>>& outputTensors);
+  const std::string getBackendName() const override;
 
-//   void init_process_group(
-//       const std::optional<std::string> &backend = std::nullopt,
-//       const std::optional<std::string> &init_method = std::nullopt,
-//       const std::optional<std::chrono::milliseconds> &timeout = std::nullopt,
-//       int world_size = -1,
-//       int rank = -1,
-//       std::optional<Store *> store = std::nullopt,
-//       const std::string &group_name = "",
-//       const std::optional<void *> &pg_options = std::nullopt,
-//       const std::optional<torch::Device> &device_id = std::nullopt);
+c10::intrusive_ptr<Work> reduce_scatter_tensor_coalesced(
+    std::vector<at::Tensor>& outputTensors,
+    std::vector<at::Tensor>& inputTensors,
+    const ReduceScatterOptions& opts = ReduceScatterOptions()) override;
 
-// std::pair<ProcessGroup, Store> new_process_group_helper(
-//     int group_size,
-//     int group_rank,
-//     const std::vector<int> &global_ranks_in_group,
-//     const std::string &backend,
-//     Store *store,
-//     const std::string &group_name,
-//     std::optional<std::string> backend_options = std::nullopt,
-//     std::optional<int> timeout = std::nullopt,
-//     std::optional<std::string> pg_tag = std::nullopt,
-//     std::optional<int> device_id = std::nullopt,
-//     std::optional<std::string> group_desc = std::nullopt);
+c10::intrusive_ptr<Work> allgather_into_tensor_coalesced(
+      std::vector<at::Tensor>& outputTensors/* outputs */,
+      std::vector<at::Tensor>& inputTensors/* inputs */,
+      const AllgatherOptions& /* opts */ = AllgatherOptions()) override;
 
-
-//   c10::intrusive_ptr<Work> _new_process_group_helper(
-//       std::vector<std::vector<at::Tensor>>& outputTensors);
 
 c10::intrusive_ptr<Work> broadcast(
     std::vector<at::Tensor> &data,
