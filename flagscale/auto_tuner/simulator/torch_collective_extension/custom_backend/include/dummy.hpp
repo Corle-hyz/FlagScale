@@ -26,6 +26,8 @@ class BackendDummy : public Backend {
   BackendDummy(int rank, int size);
 
   const std::string getBackendName() const override;
+  void startCoalescing() override;
+  c10::intrusive_ptr<Work> endCoalescing() override;
 
 c10::intrusive_ptr<Work> reduce_scatter_tensor_coalesced(
     std::vector<at::Tensor>& outputTensors,
@@ -37,6 +39,10 @@ c10::intrusive_ptr<Work> allgather_into_tensor_coalesced(
       std::vector<at::Tensor>& inputTensors/* inputs */,
       const AllgatherOptions& /* opts */ = AllgatherOptions()) override;
 
+c10::intrusive_ptr<Work> _reduce_scatter_base(
+      at::Tensor& outputTensors/* outputBuffer */,
+      at::Tensor& inputTensors/* inputBuffer */,
+      const ReduceScatterOptions& /* opts */ = ReduceScatterOptions()) override;
 
 c10::intrusive_ptr<Work> broadcast(
     std::vector<at::Tensor> &data,

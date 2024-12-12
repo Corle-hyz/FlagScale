@@ -339,4 +339,6 @@ if __name__ == "__main__":
     )
 
     end_time = time.time()
-    print("> elapsed time: ", end_time - start_time)
+    elapsed_time = end_time - start_time
+    # print("> elapsed time: ", elapsed_time)
+    print(f"[simulatior output] forward: {elapsed_time/3}, backward: {elapsed_time*2/3}, communication: {0.0}")

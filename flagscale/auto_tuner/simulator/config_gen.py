@@ -51,6 +51,15 @@ def generate_hetero_meshes(
     for i in range(devices_info.device_types_count):
         device_num = devices_info.device_num_list[i]
         devices_info.possible_parallelisms.append(enumerate_parallelism(device_num))
+    
+    def is_legal_combination(comb: list):
+        pp = sum(comb[4::5])
+        # check dp is legal
+        max_dp = global_batch_size // pp
+        for dp in comb[3::5]:
+            if max_dp % dp != 0:
+                return False
+        return True
 
     def combine_possible_parallelisms(possible_parallelisms):
         ''' example
@@ -65,6 +74,9 @@ def generate_hetero_meshes(
         '''
         all_combinations = product(*possible_parallelisms)
         results = [sum(comb, []) for comb in all_combinations]
+        for result in results:
+            if not is_legal_combination(result):
+                results.remove(result)
         return results
     
     return combine_possible_parallelisms(devices_info.possible_parallelisms)
@@ -133,7 +145,7 @@ def GenHeteroConfigs(
         global_batch_size=global_batch_size, 
         num_layers=num_layers)
     for mesh in hetero_meshes:
-        pp_stages = sum(mesh[3::5])
+        pp_stages = sum(mesh[4::5])
         pp_layer_splits = split_layers(num_layers=num_layers, pp_stages=pp_stages)
         for split in pp_layer_splits:
             hetero_config = HeteroConfig(mesh=mesh, 
@@ -151,7 +163,7 @@ if __name__ == "__main__":
     device_type_list = ["A", "B"]
     device_num_list = [4, 4]
     global_batch_size = 32
-    num_micro_batches = 16
+    num_micro_batches = 8
     num_layers = 4
     hetero_configs = []
 
@@ -164,14 +176,12 @@ if __name__ == "__main__":
         hetero_configs=hetero_configs
     )
 
-    # print("Hetero Config Number: ", len(hetero_configs))
-    # for hetero_config in hetero_configs:
-    #     print(hetero_config.mesh, hetero_config.pp_layer_split)
 
     for hetero_config in hetero_configs:
-        hetero_config.simulated_time = analylize_pipeline_time.analyze_pp_time(
+        pp_cost = hetero_config.simulated_time = analylize_pipeline_time.analyze_pp_time(
             scheme="1F1B",
             num_micro_batches=num_micro_batches,
             process_mesh=hetero_config.mesh,
             pp_layers_split=hetero_config.pp_layer_split
         )
+        print(f"pipeline cost: {pp_cost}")

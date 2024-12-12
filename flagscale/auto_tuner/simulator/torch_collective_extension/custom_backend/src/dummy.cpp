@@ -33,11 +33,23 @@ const std::string BackendDummy::getBackendName() const{
   return "dummy";
 }
 
+void BackendDummy::startCoalescing(){
+    return;
+  }
+
+c10::intrusive_ptr<Work> BackendDummy::endCoalescing(){
+  at::Tensor outputTensors;
+  auto future = c10::make_intrusive<c10::ivalue::Future>(
+    c10::ListType::create(c10::ListType::create(c10::TensorType::get())));
+  future->markCompleted(c10::IValue(outputTensors));
+  return c10::make_intrusive<WorkDummy>(OpType::ALLGATHER, std::move(future));
+}
+
 c10::intrusive_ptr<Work> BackendDummy::reduce_scatter_tensor_coalesced(
     std::vector<at::Tensor>& outputTensors,
     std::vector<at::Tensor>& inputTensors,
     const ReduceScatterOptions&) {
-        printf("dummy reduce_scatter_tensor_coalesced\n");
+        // printf("dummy reduce_scatter_tensor_coalesced\n");
     for (auto& outputTensor : outputTensors) {
       outputTensor.fill_(1);
     }
@@ -52,10 +64,26 @@ c10::intrusive_ptr<Work> BackendDummy::allgather_into_tensor_coalesced(
       std::vector<at::Tensor>& outputTensors/* outputs */,
       std::vector<at::Tensor>& inputTensors/* inputs */,
       const AllgatherOptions& ) {
-        printf("dummy reduce_scatter_tensor_coalesced\n");
+        // printf("dummy reduce_scatter_tensor_coalesced\n");
     for (auto& outputTensor : outputTensors) {
       outputTensor.fill_(1);
     }
+
+  auto future = c10::make_intrusive<c10::ivalue::Future>(
+    c10::ListType::create(c10::ListType::create(c10::TensorType::get())));
+  future->markCompleted(c10::IValue(outputTensors));
+  return c10::make_intrusive<WorkDummy>(OpType::ALLGATHER, std::move(future));
+}
+
+c10::intrusive_ptr<Work> BackendDummy::_reduce_scatter_base(
+      at::Tensor& outputTensors/* outputBuffer */,
+      at::Tensor& inputTensors/* inputBuffer */,
+      const ReduceScatterOptions& ) {
+        // printf("dummy _reduce_scatter_base\n");
+    // for (auto& outputTensor : outputTensors) {
+    //   outputTensor.fill_(1);
+    // }
+    outputTensors.fill_(1);
 
   auto future = c10::make_intrusive<c10::ivalue::Future>(
     c10::ListType::create(c10::ListType::create(c10::TensorType::get())));
@@ -69,7 +97,7 @@ c10::intrusive_ptr<Work> BackendDummy::allgather(
     std::vector<std::vector<at::Tensor>>& outputTensors,
     std::vector<at::Tensor>& inputTensors,
     const AllgatherOptions& /* unused */) {
-  printf("dummy allgather\n");
+  // printf("dummy allgather\n");
   for (auto& outputTensorVec : outputTensors) {
       for (auto& outputTensor : outputTensorVec) {
           outputTensor.fill_(1);
@@ -86,7 +114,7 @@ c10::intrusive_ptr<Work> BackendDummy::all_gather_object(
     std::vector<AnyType>& outputTensors,
     AnyType& inputTensors,
     const AllgatherOptions& /* unused */) {
-  printf("dummy all_gather_object Begin\n");
+  // printf("dummy all_gather_object Begin\n");
 
   auto future = c10::make_intrusive<c10::ivalue::Future>(
     c10::ListType::create(c10::ListType::create(c10::TensorType::get())));
@@ -97,7 +125,7 @@ c10::intrusive_ptr<Work> BackendDummy::_allgather_base(
     at::Tensor& /* unused */,
     at::Tensor& /* unused */,
     const AllgatherOptions& /* unused */) {
-  printf("dummy _allgather_base\n");
+  // printf("dummy _allgather_base\n");
   auto future = c10::make_intrusive<c10::ivalue::Future>(
     c10::ListType::create(c10::ListType::create(c10::TensorType::get())));
   return c10::make_intrusive<WorkDummy>(OpType::ALLGATHER, std::move(future));
@@ -108,7 +136,7 @@ c10::intrusive_ptr<Work> BackendDummy::_allgather_base(
 c10::intrusive_ptr<Work> BackendDummy::allreduce(
     std::vector<at::Tensor>& tensors,
     const AllreduceOptions& opts) {
-  printf("dummy allreduce\n");
+  // printf("dummy allreduce\n");
   for (auto& tensor : tensors) {
       tensor.zero_();
   }
@@ -122,7 +150,7 @@ c10::intrusive_ptr<Work> BackendDummy::allreduce(
 c10::intrusive_ptr<Work> BackendDummy::allreduce_coalesced(
     std::vector<at::Tensor>& /* unused */,
     const AllreduceCoalescedOptions& /* unused */) {
-  printf("dummy allreduce_coalesced\n");
+  // printf("dummy allreduce_coalesced\n");
   auto future = c10::make_intrusive<c10::ivalue::Future>(
     c10::ListType::create(c10::ListType::create(c10::TensorType::get())));
   return c10::make_intrusive<WorkDummy>(OpType::ALLGATHER, std::move(future));
@@ -132,7 +160,7 @@ c10::intrusive_ptr<Work> BackendDummy::alltoall(
     std::vector<at::Tensor>& /* unused */,
     std::vector<at::Tensor>& /* unused */,
     const AllToAllOptions& /* unused */) {
-  printf("dummy alltoall\n");
+  // printf("dummy alltoall\n");
   auto future = c10::make_intrusive<c10::ivalue::Future>(
     c10::ListType::create(c10::ListType::create(c10::TensorType::get())));
   return c10::make_intrusive<WorkDummy>(OpType::ALLGATHER, std::move(future));
@@ -144,7 +172,7 @@ c10::intrusive_ptr<Work> BackendDummy::alltoall_base(
     std::vector<int64_t>& outputSplitSizes,
     std::vector<int64_t>& inputSplitSizes,
     const AllToAllOptions& /* unused */) {
-  printf("dummy alltoall_base\n");
+  // printf("dummy alltoall_base\n");
 
   auto future = c10::make_intrusive<c10::ivalue::Future>(
     c10::ListType::create(c10::ListType::create(c10::TensorType::get())));
@@ -153,7 +181,7 @@ c10::intrusive_ptr<Work> BackendDummy::alltoall_base(
 
 c10::intrusive_ptr<Work> BackendDummy::barrier(
     const BarrierOptions& /* unused */) {
-  printf("dummy barrier\n");
+  // printf("dummy barrier\n");
 
   auto future = c10::make_intrusive<c10::ivalue::Future>(
     c10::ListType::create(c10::ListType::create(c10::TensorType::get())));
@@ -163,7 +191,7 @@ c10::intrusive_ptr<Work> BackendDummy::barrier(
 c10::intrusive_ptr<Work> BackendDummy::broadcast(
     std::vector<at::Tensor>& tensors,
     const BroadcastOptions& opts) {
-  printf("dummy broadcast\n");
+  // printf("dummy broadcast\n");
   for (auto& tensor : tensors) {
       tensor.zero_();
   }
@@ -178,7 +206,7 @@ c10::intrusive_ptr<Work> BackendDummy::gather(
     std::vector<std::vector<at::Tensor>>& /* unused */,
     std::vector<at::Tensor>& /* unused */,
     const GatherOptions& /* unused */) {
-  printf("dummy gather\n");
+  // printf("dummy gather\n");
 
   auto future = c10::make_intrusive<c10::ivalue::Future>(
     c10::ListType::create(c10::ListType::create(c10::TensorType::get())));
@@ -188,7 +216,7 @@ c10::intrusive_ptr<Work> BackendDummy::gather(
 c10::intrusive_ptr<Work> BackendDummy::reduce(
     std::vector<at::Tensor>& /* unused */,
     const ReduceOptions& /* unused */) {
-  printf("dummy reduce\n");
+  // printf("dummy reduce\n");
 
   auto future = c10::make_intrusive<c10::ivalue::Future>(
     c10::ListType::create(c10::ListType::create(c10::TensorType::get())));
@@ -199,7 +227,7 @@ c10::intrusive_ptr<Work> BackendDummy::reduce_scatter(
     std::vector<at::Tensor>& /* unused */,
     std::vector<std::vector<at::Tensor>>& /* unused */,
     const ReduceScatterOptions& /* unused */) {
-  printf("dummy reduce_scatter\n");
+  // printf("dummy reduce_scatter\n");
   auto future = c10::make_intrusive<c10::ivalue::Future>(
     c10::ListType::create(c10::ListType::create(c10::TensorType::get())));
   return c10::make_intrusive<WorkDummy>(OpType::ALLGATHER, std::move(future));
@@ -209,7 +237,7 @@ c10::intrusive_ptr<Work> BackendDummy::scatter(
     std::vector<at::Tensor>& /* unused */,
     std::vector<std::vector<at::Tensor>>& /* unused */,
     const ScatterOptions& /* unused */) {
-  printf("dummy scatter\n");
+  // printf("dummy scatter\n");
 
   auto future = c10::make_intrusive<c10::ivalue::Future>(
     c10::ListType::create(c10::ListType::create(c10::TensorType::get())));
