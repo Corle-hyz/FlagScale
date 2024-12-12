@@ -155,8 +155,47 @@ def GenHeteroConfigs(
             hetero_configs.append(hetero_config)
     return
 
-
+import flagscale.train.theoretical_memory_usage as mem_usg
 import analylize_pipeline_time
+
+def report_oom_error(
+        memory_capacity_of_devices: list,
+        meshes_config: list,
+        peak_memory_usage_per_stage: list
+):
+    stage_index = 0
+    for mesh_index, num_stages_in_current_mesh in enumerate(meshes_config[4::5]):
+        for i in range(num_stages_in_current_mesh):
+            if peak_memory_usage_per_stage[stage_index+i] >= memory_capacity_of_devices[mesh_index]:
+                return True
+    return False
+
+def gen_memory_model_args_from_mesh_config(
+        mesh_config: list
+):
+    # TODO: build from mesh config, adopt the mem_usg
+    args = {}
+    return args
+
+
+def prune_by_memory_model(
+        hetero_configs: list,
+        num_micro_batches: int,
+        memory_capacity_of_devices: list
+):
+    for mesh_config in hetero_configs:
+        peak_memory_usage_per_stage = []
+        model_parallel_training_args = gen_memory_model_args_from_mesh_config(mesh_config)
+        for stage in range(len(mesh_config)//5):
+            peak_activation_memory_usage = mem_usg.compute_activation_memory(args=model_parallel_training_args, num_microbatches=num_micro_batches)
+            peak_weight_optimizer_usage = mem_usg.compute_weight_and_optimizer_memory(args=model_parallel_training_args)
+            peak_memory_usage = peak_activation_memory_usage + peak_weight_optimizer_usage
+
+            peak_memory_usage_per_stage.append(peak_memory_usage)
+        if report_oom_error(memory_capacity_of_devices,
+                            mesh_config, 
+                            peak_memory_usage_per_stage):
+            hetero_configs.remove(mesh_config)
 
 # for test and usage
 if __name__ == "__main__":
@@ -166,7 +205,9 @@ if __name__ == "__main__":
     num_micro_batches = 8
     num_layers = 4
     hetero_configs = []
+    memory_capacity_of_devices = [80, 32] # GB
 
+    # generate all possible and legal mesh configs, each element of hetero_configs is a mesh list
     GenHeteroConfigs(
         device_type_list=device_type_list,
         device_num_list=device_num_list,
@@ -176,7 +217,15 @@ if __name__ == "__main__":
         hetero_configs=hetero_configs
     )
 
+    # prunning by memory model
+    prune_by_memory_model(
+        hetero_configs=hetero_configs,
+        num_micro_batches=num_micro_batches,
+        memory_capacity_of_devices=memory_capacity_of_devices
+    )
 
+
+    # simulation
     for hetero_config in hetero_configs:
         pp_cost = hetero_config.simulated_time = analylize_pipeline_time.analyze_pp_time(
             scheme="1F1B",
