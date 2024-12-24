@@ -1,6 +1,30 @@
 from itertools import product
 from itertools import combinations
 
+import json
+import ast
+
+import os
+# from itertools import product
+import flagscale.train.theoretical_memory_usage as mem_usg
+import analylize_pipeline_time
+
+BYTES_OF_GB = 10**9
+
+# device_type_list = ["A800", "A800", "BI150", "BI150"]
+# device_num_list = [8, 8, 8, 8]
+# memory_capacity_of_devices = [80, 80, 32, 32] # GB
+
+device_type_list = ["A800", "BI150"]
+device_num_list = [8, 8]
+memory_capacity_of_devices = [80, 32] # GB
+
+global_batch_size = 512
+num_micro_batches = 8
+num_layers = 32
+
+num_gpus = sum(device_num_list)
+
 
 class DevicesInfo:
     def __init__(self, device_type_list: list, device_num_list: list):
@@ -17,8 +41,10 @@ class HeteroConfig:
                  device_types, 
                  pp_layer_split, 
                  recompute_granularity = None, 
-                 recompute_method = None,
-                 recompute_num_layers = None):
+                 recompute_method = "uniform",
+                 recompute_num_layers = 1,
+                 theory_peak_memory = 0.0,
+                 oom_error=False):
         self.mesh = mesh
         self.device_types = device_types
         self.pp_layer_split = pp_layer_split
@@ -28,30 +54,25 @@ class HeteroConfig:
         self.recompute_num_layers = recompute_num_layers
 
         self.simulated_time = 0.0
-
+        self.theory_peak_memory = theory_peak_memory
+        self.oom_error = oom_error
 
 def generate_hetero_meshes(
         devices_info: DevicesInfo,
-        global_batch_size: int=None,
-        num_layers: int=None,
+        global_batch_size: int = None,
+        num_layers: int = None,
+        output_file: str = "results.json"
 ):
-    def enumerate_parallelism(
-        device_num: int=None
-        ):
+    def enumerate_parallelism(device_num: int = None):
         possible_parallelisms = []
-        for tp in range(1, device_num+1):
-            for dp in range(1, device_num//tp+1):
-                if device_num % (dp*tp) == 0:
-                    pp = device_num // (dp*tp)
+        for tp in range(1, device_num + 1):
+            for dp in range(1, device_num // tp + 1):
+                if device_num % (dp * tp) == 0:
+                    pp = device_num // (dp * tp)
                     # mesh: [tp, cp, ep, dp, pp]
                     possible_parallelisms.append([tp, 1, 1, dp, pp])
         return possible_parallelisms
-    
-    # enumerate all possible meshes for each kind of device
-    for i in range(devices_info.device_types_count):
-        device_num = devices_info.device_num_list[i]
-        devices_info.possible_parallelisms.append(enumerate_parallelism(device_num))
-    
+
     def is_legal_combination(comb: list):
         pp = sum(comb[4::5])
         # check dp is legal
@@ -61,102 +82,91 @@ def generate_hetero_meshes(
                 return False
         return True
 
-    def combine_possible_parallelisms(possible_parallelisms):
-        ''' example
-        devices_info.possible_parallelisms = [
-            [[1, 2, 3, 4, 5], [6, 7, 8, 9, 0]],
-            [[1, 2, 3, 4, 5]]
-        ]
-        combine_possible_parallelisms(devices_info.possible_parallelisms)
-        -> [1, 2, 3, 4, 5, 1, 2, 3, 4, 5]
-        -> [6, 7, 8, 9, 0, 1, 2, 3, 4, 5]
-    }
-        '''
+    def combine_possible_parallelisms(possible_parallelisms, output_file):
+        ''' Combine and filter results, writing them to a file to avoid OOM. '''
         all_combinations = product(*possible_parallelisms)
-        results = [sum(comb, []) for comb in all_combinations]
-        for result in results:
-            if not is_legal_combination(result):
-                results.remove(result)
-        return results
-    
-    return combine_possible_parallelisms(devices_info.possible_parallelisms)
-    
+        with open(output_file, "w") as f:
+            for comb in all_combinations:
+                result = sum(comb, [])
+                if is_legal_combination(result):
+                    # print(result, sum(result[4::5]), sum(result)/2)
+                    pp_stages = sum(result[4::5])
+                    # to prune some extreme configs
+                    if pp_stages < (num_gpus / 2):
+                        # print("write")
+                        f.write(",".join(map(str, result)) + "\n")
+
+    # Ensure output file does not exist initially
+    if os.path.exists(output_file):
+        os.remove(output_file)
+
+    # Enumerate all possible meshes for each kind of device
+    for i in range(devices_info.device_types_count):
+        device_num = devices_info.device_num_list[i]
+        devices_info.possible_parallelisms.append(enumerate_parallelism(device_num))
+
+    # Combine possibilities and write results to file
+    combine_possible_parallelisms(devices_info.possible_parallelisms, output_file)
+    print(f"Results written to {output_file}")
+
 
 def split_layers(num_layers, pp_stages):
     results = []
+    # print(pp_stages)
     for split_points in combinations(range(1, num_layers), pp_stages - 1):
+        # print(split_points)
+        if len(split_points) == 0:
+            continue
         splits = [split_points[0]] + [split_points[i] - split_points[i - 1] for i in range(1, len(split_points))] + [num_layers - split_points[-1]]
+        # to prune some extreme splits
+        if max(splits) / min(splits) > 2:
+            continue
+        # print(splits)
         results.append(splits)
     return results
 
 
-def generate_fine_grained_recompute(
-    pp_stages: int,
-    num_micro_batches: int,
-    pp_layer_split: list
-):
-    '''
-    # pp 3 stages
-    # recompute_granularity_per_stage_micro_batch:
-      # [stages, num_mbs, enable/disable, ...]
-      # - [1, 1, 0, 0, 0]
-      # - [1, 30, 1, 2, 1]
-      # - [1, 30, 1, 2, 1]
-    # recompute_method_per_stage_micro_batch:
-      # [stages, num_mbs, bloclk/uniform, ...]
-      # - [1, 1, 0, 0, 0]
-      # - [1, 30, 0, 2, 0]
-      # - [1, 30, 1, 2, 1]
-    # recompute_num_layers_per_stage_micro_batch:
-      # [stages, num_mbs, num_layers, ...]
-      # - [1, 1, 0, 0, 0]
-      # - [1, 30, 1, 2, 1]
-      # - [1, 30, 2, 2, 2]
-    '''
-    # to avoid huge search space, we assume the config of each stage is a list of length 5
-    # for now we only change the granularity, leave out method and num_layers
+class MeshArguments:
+    def __init__(self, 
+                 mesh_config: HeteroConfig):    
+        # TODO: build from mesh config, adopt the mem_usg
 
-    # if the num_micro_batches is too large, we will generate every num_micro_batches/8 ones
-    # which means there would be at most 8 configs
-    generate_parts = num_micro_batches if num_micro_batches < 8 else 8
-    possible_granularities = []
+        # [tp, cp, ep, dp, pp]
+        self.data_parallel_size = mesh_config.mesh[3]
+        self.pipeline_model_parallel_size = mesh_config.mesh[4]
+        self.tensor_model_parallel_size = mesh_config.mesh[1]
+        self.virtual_pipeline_model_parallel_size = None # TODO
+        self.num_experts = 1 # TODO
 
-    for i in range(0, num_micro_batches, num_micro_batches//generate_parts):
-        # although the first position indicate the stage numbers, there is no difference
-        # between specifying for each stage
+        self.swiglu = True
+        self.micro_batch_size = global_batch_size / num_micro_batches / self.data_parallel_size
+        self.num_layers = num_layers
+        self.num_attention_heads = 32
+        self.group_query_attention = None # TODO
+        self.num_query_groups = 1 # TODO
+        
+        self.seq_length = 2048
+        self.padded_vocab_size = 4096 # TODO
+        self.hidden_size = 4096
+        # self.ffn_hidden_size
+        self.multiple_of = 256
+        hidden_dim = int(4 * self.hidden_size * 2 / 3)
+        self.ffn_hidden_size = self.multiple_of * (
+            (hidden_dim + self.multiple_of - 1) // self.multiple_of
+        )
+        # self.kv_channels
+        self.kv_channels = self.hidden_size // self.num_attention_heads
 
-        # besides, to avoid search space exploration, we assume the behaviour of micro-batches
-        # would not interleave
-        possible_granularities.append([1, i, 1, num_micro_batches-i, 0])
+        self.recompute_granularity = mesh_config.recompute_granularity
+        self.recompute_method = mesh_config.recompute_method
+        self.recompute_num_layers = mesh_config.recompute_num_layers
 
-# TODO: not consider the fine-grained recomp
-def GenHeteroConfigs(
-        device_type_list,
-        device_num_list,
-        global_batch_size,
-        num_layers,
-        num_micro_batches,
-        hetero_configs: list
-):
-    
-    devices_info = DevicesInfo(device_type_list=device_type_list, device_num_list=device_num_list)
-    hetero_meshes = generate_hetero_meshes(
-        devices_info=devices_info, 
-        global_batch_size=global_batch_size, 
-        num_layers=num_layers)
-    for mesh in hetero_meshes:
-        pp_stages = sum(mesh[4::5])
-        pp_layer_splits = split_layers(num_layers=num_layers, pp_stages=pp_stages)
-        for split in pp_layer_splits:
-            hetero_config = HeteroConfig(mesh=mesh, 
-                                         pp_layer_split=split,
-                                         device_types=device_type_list)
-            
-            hetero_configs.append(hetero_config)
-    return
+        self.use_flash_attn = True
+        self.sequence_parallel = True
+        self.use_distributed_optimizer =True
+        self.untie_embeddings_and_output_weights = False # TODO
 
-import flagscale.train.theoretical_memory_usage as mem_usg
-import analylize_pipeline_time
+
 
 def report_oom_error(
         memory_capacity_of_devices: list,
@@ -170,67 +180,119 @@ def report_oom_error(
                 return True
     return False
 
-def gen_memory_model_args_from_mesh_config(
-        mesh_config: list
-):
-    # TODO: build from mesh config, adopt the mem_usg
-    args = {}
-    return args
+def calculate_peak_memory_per_stage(mesh_config):
+    peak_memory_usage_per_stage = []
+    model_parallel_training_args = MeshArguments(mesh_config)
+    # for stage in range(len(mesh_config)//5):
+    stage_index = 0
+    # print("-"*10)
+    # print(mesh_config.mesh)
+    # print(mesh_config.pp_layer_split)
+    for pp_stage_num_per_mesh in mesh_config.mesh[4::5]:
+        for stage in range(pp_stage_num_per_mesh):
 
+            model_parallel_training_args.num_layers = mesh_config.pp_layer_split[stage_index]
+            # print(model_parallel_training_args.num_layers)
 
-def prune_by_memory_model(
-        hetero_configs: list,
-        num_micro_batches: int,
-        memory_capacity_of_devices: list
-):
-    for mesh_config in hetero_configs:
-        peak_memory_usage_per_stage = []
-        model_parallel_training_args = gen_memory_model_args_from_mesh_config(mesh_config)
-        for stage in range(len(mesh_config)//5):
             peak_activation_memory_usage = mem_usg.compute_activation_memory(args=model_parallel_training_args, num_microbatches=num_micro_batches)
             peak_weight_optimizer_usage = mem_usg.compute_weight_and_optimizer_memory(args=model_parallel_training_args)
             peak_memory_usage = peak_activation_memory_usage + peak_weight_optimizer_usage
 
-            peak_memory_usage_per_stage.append(peak_memory_usage)
-        if report_oom_error(memory_capacity_of_devices,
-                            mesh_config, 
-                            peak_memory_usage_per_stage):
-            hetero_configs.remove(mesh_config)
+            peak_memory_usage_per_stage.append(peak_memory_usage/BYTES_OF_GB)
+            stage_index = stage_index + 1
+            # mesh_config_dict["peak_memory_usage_per_stage"]=peak_memory_usage_per_stage
+            # mesh_config_dict["OOM"]=report_oom_error(memory_capacity_of_devices,
+            #                 mesh_config, 
+            #                 peak_memory_usage_per_stage)
+
+    # print(peak_memory_usage_per_stage)
+    return peak_memory_usage_per_stage
+
+
+def gen_hetero_configs(
+        device_type_list,
+        device_num_list,
+        global_batch_size,
+        num_layers,
+        # num_micro_batches,
+        # hetero_configs: list,
+        output_config_file: str = "hetero_configs.json"  # 新增参数用于保存 hetero_config
+):
+    devices_info = DevicesInfo(device_type_list=device_type_list, device_num_list=device_num_list)
+    
+    # 调用 generate_hetero_meshes，生成并写入结果文件
+    generate_hetero_meshes(
+        devices_info=devices_info,
+        global_batch_size=global_batch_size,
+        num_layers=num_layers,
+        output_file="results.json"  # 保存 hetero_meshes 的中间文件
+    )
+    
+    # 从 results.json 读取 hetero_meshes
+    hetero_meshes = []
+    with open("results.json", "r") as f:
+        for line in f:
+            hetero_meshes.append(list(map(int, line.strip().split(","))))
+    # print(hetero_meshes)
+    # assert False
+    # 遍历 hetero_meshes 并生成 hetero_config
+    with open(output_config_file, "w") as config_file:  # 打开输出文件
+        for mesh in hetero_meshes:
+            pp_stages = sum(mesh[4::5])
+            pp_layer_splits = split_layers(num_layers=num_layers, pp_stages=pp_stages)
+            for split in pp_layer_splits:
+                hetero_config = HeteroConfig(mesh=mesh, 
+                                             pp_layer_split=split,
+                                             device_types=device_type_list)
+                # hetero_configs.append(hetero_config)
+                
+                # 保存 HeteroConfig 的每个成员变量到文件
+                theory_peak_memory_per_stage = calculate_peak_memory_per_stage(hetero_config)
+                oom_error = report_oom_error(
+                    memory_capacity_of_devices=memory_capacity_of_devices,
+                    meshes_config=mesh,
+                    peak_memory_usage_per_stage=theory_peak_memory_per_stage)
+                if oom_error:
+                    continue
+                config_data = {
+                    "mesh": hetero_config.mesh,
+                    "device_types": hetero_config.device_types,
+                    "pp_layer_split": hetero_config.pp_layer_split,
+                    "recompute_granularity": hetero_config.recompute_granularity,
+                    "recompute_method": hetero_config.recompute_method,
+                    "recompute_num_layers": hetero_config.recompute_num_layers,
+                    "simulated_time": hetero_config.simulated_time,
+                    "theory_peak_memory": theory_peak_memory_per_stage,
+                    "oom_error": oom_error
+                }
+                config_file.write(f"{config_data}\n")
+    
+    print(f"Hetero configurations saved to {output_config_file}")
+
+
 
 # for test and usage
 if __name__ == "__main__":
-    device_type_list = ["A", "B"]
-    device_num_list = [4, 4]
-    global_batch_size = 32
-    num_micro_batches = 8
-    num_layers = 4
-    hetero_configs = []
-    memory_capacity_of_devices = [80, 32] # GB
+    # hetero_configs = []
 
     # generate all possible and legal mesh configs, each element of hetero_configs is a mesh list
-    GenHeteroConfigs(
+    gen_hetero_configs(
         device_type_list=device_type_list,
         device_num_list=device_num_list,
         global_batch_size=global_batch_size,
         num_layers=num_layers,
-        num_micro_batches=num_micro_batches,
-        hetero_configs=hetero_configs
+        output_config_file = "hetero_configs.json"
+        # num_micro_batches=num_micro_batches,
+        # hetero_configs=hetero_configs
     )
 
-    # prunning by memory model
-    prune_by_memory_model(
-        hetero_configs=hetero_configs,
-        num_micro_batches=num_micro_batches,
-        memory_capacity_of_devices=memory_capacity_of_devices
-    )
-
-
-    # simulation
-    for hetero_config in hetero_configs:
-        pp_cost = hetero_config.simulated_time = analylize_pipeline_time.analyze_pp_time(
-            scheme="1F1B",
-            num_micro_batches=num_micro_batches,
-            process_mesh=hetero_config.mesh,
-            pp_layers_split=hetero_config.pp_layer_split
-        )
-        print(f"pipeline cost: {pp_cost}")
+    # assert False
+    # # simulation
+    # for hetero_config in hetero_configs:
+    #     pp_cost = hetero_config.simulated_time = analylize_pipeline_time.analyze_pp_time(
+    #         scheme="1F1B",
+    #         num_micro_batches=num_micro_batches,
+    #         process_mesh=hetero_config.mesh,
+    #         pp_layers_split=hetero_config.pp_layer_split
+    #     )
+    #     print(f"pipeline cost: {pp_cost}")
